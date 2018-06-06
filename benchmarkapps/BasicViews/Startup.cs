@@ -3,10 +3,12 @@
 
 using System;
 using System.IO;
-using System.Text.RegularExpressions;
+using System.Linq;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Npgsql;
@@ -15,6 +17,11 @@ namespace BasicViews
 {
     public class Startup
     {
+        // Optional feature for console debugging.
+        private static readonly bool _displaySqlScripts = false;
+
+        private bool _isSQLite;
+
         public Startup(IConfiguration configuration)
         {
             Configuration = configuration;
@@ -24,31 +31,30 @@ namespace BasicViews
 
         public void ConfigureServices(IServiceCollection services)
         {
-            switch (Configuration["Database"])
+            var connectionString = Configuration["ConnectionString"];
+            var databaseType = Configuration["Database"];
+            if (string.IsNullOrEmpty(databaseType))
             {
-                case "None":
-                    // No database needed
-                    break;
+                // Use SQLite when running outside a benchmark test or if benchmarks user specified "None".
+                // ("None" is not passed to the web application.)
+                databaseType = "SQLite";
+            }
+            else if (string.IsNullOrEmpty(connectionString))
+            {
+                throw new ArgumentException("Connection string must be specified for {databaseType}.");
+            }
 
-                case var database when string.IsNullOrEmpty(database):
-                    // Use SQLite when running outside a benchmark test.
+            switch (databaseType.ToUpper())
+            {
+#if !NET461
+                case "MYSQL":
                     services
-                        .AddEntityFrameworkSqlite()
-                        .AddDbContextPool<BasicViewsContext>(options => options.UseSqlite("Data Source=BasicViews.db"));
+                        .AddEntityFrameworkMySql()
+                        .AddDbContext<BasicViewsContext>(options => options.UseMySql(connectionString));
                     break;
+#endif
 
-                case "PostgreSql":
-                    var connectionString = Configuration["ConnectionString"];
-                    if (string.IsNullOrEmpty(connectionString))
-                    {
-                        throw new ArgumentException("Connection string must be specified for Npgsql.");
-                    }
-
-                    // Make connection string unique to this application
-                    connectionString = Regex.Replace(
-                        input: connectionString,
-                        pattern: "(Database=)[^;]*;",
-                        replacement: "$1BasicViews;");
+                case "POSTGRESQL":
                     var settings = new NpgsqlConnectionStringBuilder(connectionString);
                     if (!settings.NoResetOnClose)
                     {
@@ -64,9 +70,21 @@ namespace BasicViews
                         .AddDbContextPool<BasicViewsContext>(options => options.UseNpgsql(connectionString));
                     break;
 
+                case "SQLITE":
+                    _isSQLite = true;
+                    services
+                        .AddEntityFrameworkSqlite()
+                        .AddDbContextPool<BasicViewsContext>(options => options.UseSqlite("Data Source=BasicViews.db"));
+                    break;
+
+                case "SQLSERVER":
+                    services
+                        .AddEntityFrameworkSqlServer()
+                        .AddDbContextPool<BasicViewsContext>(options => options.UseSqlServer(connectionString));
+                    break;
+
                 default:
-                    throw new ArgumentException(
-                        $"Application does not support database type {Configuration["Database"]}.");
+                    throw new ArgumentException($"Application does not support database type {databaseType}.");
             }
 
             services.AddMvc();
@@ -75,13 +93,14 @@ namespace BasicViews
         public void Configure(IApplicationBuilder app, IApplicationLifetime lifetime)
         {
             var services = app.ApplicationServices;
-            switch (Configuration["Database"])
+            CreateDatabaseTables(services);
+            if (_isSQLite)
             {
-                case var database when string.IsNullOrEmpty(database):
-                case "PostgreSql":
-                    CreateDatabase(services);
-                    lifetime.ApplicationStopping.Register(() => DropDatabase(services));
-                    break;
+                lifetime.ApplicationStopping.Register(() => DropDatabase(services));
+            }
+            else
+            {
+                lifetime.ApplicationStopping.Register(() => DropDatabaseTables(services));
             }
 
             app.Use(next => async context =>
@@ -101,24 +120,66 @@ namespace BasicViews
             app.UseMvcWithDefaultRoute();
         }
 
-        private static void CreateDatabase(IServiceProvider services)
+        private void CreateDatabaseTables(IServiceProvider services)
         {
             using (var serviceScope = services.GetRequiredService<IServiceScopeFactory>().CreateScope())
             {
-                using (var dbContext = services.GetRequiredService<BasicViewsContext>())
+                using (var dbContext = serviceScope.ServiceProvider.GetRequiredService<BasicViewsContext>())
                 {
-                    dbContext.Database.EnsureCreated();
+                    if (_displaySqlScripts)
+                    {
+                        var migrator = dbContext.GetService<IMigrator>();
+                        var script = migrator.GenerateScript(
+                            fromMigration: Migration.InitialDatabase,
+                            toMigration: dbContext.Database.GetMigrations().LastOrDefault());
+                        Console.WriteLine("Create script:");
+                        Console.WriteLine(script);
+                    }
+
+                    dbContext.Database.Migrate();
                 }
             }
         }
 
-        private static void DropDatabase(IServiceProvider services)
+        // Don't leave SQLite's .db file behind.
+        public static void DropDatabase(IServiceProvider services)
         {
             using (var serviceScope = services.GetRequiredService<IServiceScopeFactory>().CreateScope())
             {
-                using (var dbContext = services.GetRequiredService<BasicViewsContext>())
+                using (var dbContext = serviceScope.ServiceProvider.GetRequiredService<BasicViewsContext>())
                 {
+                    if (_displaySqlScripts)
+                    {
+                        var migrator = dbContext.GetService<IMigrator>();
+                        var script = migrator.GenerateScript(
+                            fromMigration: dbContext.Database.GetAppliedMigrations().LastOrDefault(),
+                            toMigration: Migration.InitialDatabase);
+                        Console.WriteLine("Delete script:");
+                        Console.WriteLine(script);
+                    }
+
                     dbContext.Database.EnsureDeleted();
+                }
+            }
+        }
+
+        private void DropDatabaseTables(IServiceProvider services)
+        {
+            using (var serviceScope = services.GetRequiredService<IServiceScopeFactory>().CreateScope())
+            {
+                using (var dbContext = serviceScope.ServiceProvider.GetRequiredService<BasicViewsContext>())
+                {
+                    var migrator = dbContext.GetService<IMigrator>();
+                    if (_displaySqlScripts)
+                    {
+                        var script = migrator.GenerateScript(
+                            fromMigration: dbContext.Database.GetAppliedMigrations().LastOrDefault(),
+                            toMigration: Migration.InitialDatabase);
+                        Console.WriteLine("Delete script:");
+                        Console.WriteLine(script);
+                    }
+
+                    migrator.Migrate(Migration.InitialDatabase);
                 }
             }
         }
