@@ -166,8 +166,7 @@ namespace Microsoft.AspNetCore.Mvc.Formatters
                 return;
             }
 
-            var objectResult = context.Result as ObjectResult;
-            if (objectResult == null)
+            if (!(context.Result is ObjectResult objectResult))
             {
                 return;
             }

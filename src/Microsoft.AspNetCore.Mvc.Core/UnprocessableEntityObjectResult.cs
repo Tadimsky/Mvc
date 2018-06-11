@@ -2,6 +2,7 @@
 // Licensed under the Apache License, Version 2.0. See License.txt in the project root for license information.
 
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Mvc.Core.Infrastructure;
 using Microsoft.AspNetCore.Mvc.ModelBinding;
 
 namespace Microsoft.AspNetCore.Mvc
@@ -9,6 +10,7 @@ namespace Microsoft.AspNetCore.Mvc
     /// <summary>
     /// An <see cref="ObjectResult"/> that when executed will produce a Unprocessable Entity (422) response.
     /// </summary>
+    [StatusCode(StatusCodes.Status422UnprocessableEntity)]
     public class UnprocessableEntityObjectResult : ObjectResult
     {
         /// <summary>

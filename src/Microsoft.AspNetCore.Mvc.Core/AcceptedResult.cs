@@ -3,6 +3,7 @@
 
 using System;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Mvc.Core.Infrastructure;
 using Microsoft.Net.Http.Headers;
 
 namespace Microsoft.AspNetCore.Mvc
@@ -10,6 +11,7 @@ namespace Microsoft.AspNetCore.Mvc
     /// <summary>
     /// An <see cref="ActionResult"/> that returns an Accepted (202) response with a Location header.
     /// </summary>
+    [StatusCode(StatusCodes.Status202Accepted)]
     public class AcceptedResult : ObjectResult
     {
         /// <summary>
